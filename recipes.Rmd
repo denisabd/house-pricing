@@ -53,21 +53,24 @@ full_recipe <- recipe(train) %>%
   step_mutate(GarageCars = as.factor(GarageCars)) %>%
   #step_filter(GrLivArea < 4500) %>%
   #remove feautues
-  step_rm(PoolQC, PoolArea, LandSlope, MiscFeature, Street, Utilities, Condition2, RoofMatl, Heating) %>%
+  step_rm(PoolQC, PoolArea, LandSlope, MiscFeature, Street, Utilities, Condition2, RoofMatl, Heating) %>% #remove features
   step_unknown(all_predictors(), -all_numeric(), new_level = "NA") %>% #impute missing values for categorical features
   step_log(all_outcomes()) %>%
-  step_nzv(all_predictors(),-all_numeric()) %>%
-  step_other(all_predictors(), -all_numeric(), threshold = 0.01) %>%
-  step_novel(all_predictors(),-all_numeric(), new_level = "new") %>%
-  step_lencode_mixed(all_predictors(), -all_numeric(), outcome = vars(SalePrice)) %>%
+  step_nzv(all_predictors(),-all_numeric(), freq_cut = 30) %>% #low variance 30-1
+  step_other(all_predictors(), -all_numeric(), threshold = 0.01) %>% #grouping sparse levels, 1% threshold
+  step_novel(all_predictors(),-all_numeric(), new_level = "new") %>% 
+  step_lencode_mixed(all_predictors(), -all_numeric(), outcome = vars(SalePrice)) %>% #target encoding
   step_knnimpute(all_predictors()) %>% #impute missing values
-  step_corr(all_predictors(), threshold = 0.8) %>%
-  step_normalize(all_predictors())
+  step_corr(all_predictors(), threshold = 0.8) %>% #exclude correlated predictors
+  step_normalize(all_predictors()) #normalization
 
 full_recipe
 
 full_prep <- prep(full_recipe,training = train)
 full_prep
+
+train_baked <- bake(full_prep,train)
+
 ```
 
 Now lets try **gbm** with **full_recipe**
