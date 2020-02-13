@@ -403,8 +403,10 @@ recipe <- recipe(data) %>%
 
 model <- daml_train(data, recipe,
                     model = "rf",
-                    tracking = "local",
-                    run_name = "varimp",
+                    tracking = "mlflow",
+                    tracking_uri = "http://localhost:5000",
+                    mlflow_experiment = "house pricing",
+                    save_model = T,
                     tunelen = 1)
 
 varImp(model)
@@ -513,6 +515,8 @@ Another interesting feature that detemines the location is **MSSubClass**.
 ```
 
 ## Model {#model}
+
+Lets create the recipe:
 ```{r message=FALSE, warning=FALSE}
 
 set.seed(123)
@@ -529,6 +533,12 @@ recipe <- recipe(train) %>%
   step_corr(all_predictors(), threshold = 0.8) %>%
   step_normalize(all_predictors())
 
+```
+
+
+Our first random forest model
+```{r}
+
 rf <- daml_train(train, recipe,
                   model = "rf",
                   feature_selection = "varimp",
@@ -540,7 +550,6 @@ rf <- daml_train(train, recipe,
                   tunelen = 5)
 
 varImp(rf)
-
 ```
 
 Now lets try our first submission!

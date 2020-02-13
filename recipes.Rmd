@@ -1,0 +1,106 @@
+---
+title: "House Pricing Recipe"
+author: "Denis Abdullin"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+  toc: true
+---
+
+Recipe with all steps in data pipeline.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+
+```{r, message=FALSE}
+library(data.table)
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(corrplot)
+library(DT)
+library(daml)
+library(DataExplorer)
+library(plotly)
+library(GGally)
+library(knitr)
+```
+
+```{r}
+train <- as.data.frame(fread('house_price_train.csv', stringsAsFactors=TRUE))
+test <- as.data.frame(fread('house_price_test.csv', stringsAsFactors=TRUE))
+```
+
+
+Full recipe
+```{r}
+
+train <- train %>%
+  filter(GrLivArea < 4500)
+
+full_recipe <- recipe(train) %>%
+  #set roles
+  update_role(everything(), new_role = "predictor") %>%
+  update_role(SalePrice, new_role = "outcome") %>%
+  update_role(Id, new_role = "ID variable") %>%
+  #data cleansing
+  step_mutate(Id = as.character(Id)) %>%
+  step_mutate(MSSubClass = as.factor(MSSubClass)) %>%
+  step_mutate(GarageCars = as.character(GarageCars)) %>%
+  step_mutate(GarageCars = ifelse((GarageCars == "4" | GarageCars == "3"), "3+", GarageCars)) %>%
+  step_mutate(GarageCars = as.factor(GarageCars)) %>%
+  #step_filter(GrLivArea < 4500) %>%
+  #remove feautues
+  step_rm(PoolQC, PoolArea, LandSlope, MiscFeature, Street, Utilities, Condition2, RoofMatl, Heating) %>%
+  step_unknown(all_predictors(), -all_numeric(), new_level = "NA") %>% #impute missing values for categorical features
+  step_log(all_outcomes()) %>%
+  step_nzv(all_predictors(),-all_numeric()) %>%
+  step_other(all_predictors(), -all_numeric(), threshold = 0.01) %>%
+  step_novel(all_predictors(),-all_numeric(), new_level = "new") %>%
+  step_lencode_mixed(all_predictors(), -all_numeric(), outcome = vars(SalePrice)) %>%
+  step_knnimpute(all_predictors()) %>% #impute missing values
+  step_corr(all_predictors(), threshold = 0.8) %>%
+  step_normalize(all_predictors())
+
+full_recipe
+
+full_prep <- prep(full_recipe,training = train)
+full_prep
+```
+
+Now lets try **gbm** with **full_recipe**
+```{r message=FALSE, warning=FALSE}
+# Tuning parameters for method 'gbm'
+tuneGrid <- expand.grid(n.trees = c(200, 300, 400, 500),
+                        interaction.depth = c(5,7,9,11),
+                        shrinkage = 0.1,
+                        n.minobsinnode = c(5,10,15))
+
+gbm <- daml_train(train, full_recipe,
+                  model = "gbm",
+                  tracking = "mlflow",
+                  feature_selection = "varimp",
+                  max_features = 24,
+                  p_subset = 0.3,
+                  tracking_uri = "http://localhost:5000",
+                  mlflow_experiment = "house pricing",
+                  grid = tuneGrid)
+
+gbm
+varImp(gbm)
+
+getModelInfo("gbm", regex = FALSE)[[1]]$grid
+
+```
+
+```{r message=FALSE, warning=FALSE}
+submission <- test %>%
+  daml_predict(model = gbm, pred_field = "SalePrice") %>%
+  select(Id, SalePrice) %>%
+  mutate(SalePrice = exp(SalePrice))
+
+write.csv(submission, "gbm_baseline.csv", row.names = F)
+
+``` 
