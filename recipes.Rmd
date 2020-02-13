@@ -53,34 +53,34 @@ full_recipe <- recipe(train) %>%
   step_mutate(GarageCars = as.factor(GarageCars)) %>%
   #step_filter(GrLivArea < 4500) %>%
   #remove feautues
-  step_rm(PoolQC, PoolArea, LandSlope, MiscFeature, Street, Utilities, Condition2, RoofMatl, Heating) %>% #remove features
+  step_rm(PoolQC, PoolArea, LandSlope, MiscFeature, Street, Utilities, Condition2, RoofMatl, Heating) %>%
   step_unknown(all_predictors(), -all_numeric(), new_level = "NA") %>% #impute missing values for categorical features
   step_log(all_outcomes()) %>%
-  step_nzv(all_predictors(),-all_numeric(), freq_cut = 30) %>% #low variance 30-1
-  step_other(all_predictors(), -all_numeric(), threshold = 0.01) %>% #grouping sparse levels, 1% threshold
-  step_novel(all_predictors(),-all_numeric(), new_level = "new") %>% 
-  step_lencode_mixed(all_predictors(), -all_numeric(), outcome = vars(SalePrice)) %>% #target encoding
+  step_nzv(all_predictors(),-all_numeric()) %>%
+  step_other(all_predictors(), -all_numeric(), threshold = 0.01) %>%
+  step_novel(all_predictors(),-all_numeric(), new_level = "new") %>%
+  step_lencode_mixed(all_predictors(), -all_numeric(), outcome = vars(SalePrice)) %>%
   step_knnimpute(all_predictors()) %>% #impute missing values
-  step_corr(all_predictors(), threshold = 0.8) %>% #exclude correlated predictors
-  step_normalize(all_predictors()) #normalization
+  step_corr(all_predictors(), threshold = 0.8) %>%
+  step_normalize(all_predictors())
 
 full_recipe
 
 full_prep <- prep(full_recipe,training = train)
 full_prep
-
-train_baked <- bake(full_prep,train)
-
 ```
 
 Now lets try **gbm** with **full_recipe**
 ```{r message=FALSE, warning=FALSE}
 # Tuning parameters for method 'gbm'
-tuneGrid <- expand.grid(n.trees = c(200, 300, 400, 500),
-                        interaction.depth = c(5,7,9,11),
+tuneGrid <- expand.grid(n.trees = 200,
+                        interaction.depth = 7,
                         shrinkage = 0.1,
-                        n.minobsinnode = c(5,10,15))
+                        n.minobsinnode = 10)
 
+set.seed(123)
+
+# Tuning parameters for method 'ranger'
 gbm <- daml_train(train, full_recipe,
                   model = "gbm",
                   tracking = "mlflow",
@@ -105,5 +105,132 @@ submission <- test %>%
   mutate(SalePrice = exp(SalePrice))
 
 write.csv(submission, "gbm_baseline.csv", row.names = F)
+```   
 
-``` 
+
+Recipe with PCA
+```{r}
+pca_recipe <- recipe(train) %>%
+  #set roles
+  update_role(everything(), new_role = "predictor") %>%
+  update_role(SalePrice, new_role = "outcome") %>%
+  update_role(Id, new_role = "ID variable") %>%
+  #data cleansing
+  step_mutate(Id = as.character(Id)) %>%
+  step_mutate(MSSubClass = as.factor(MSSubClass)) %>%
+  step_mutate(GarageCars = as.character(GarageCars)) %>%
+  step_mutate(GarageCars = ifelse((GarageCars == "4" | GarageCars == "3"), "3+", GarageCars)) %>%
+  step_mutate(GarageCars = as.factor(GarageCars)) %>%
+  #step_filter(GrLivArea < 4500) %>%
+  #remove feautues
+  step_rm(PoolQC, PoolArea, LandSlope, MiscFeature, Street, Utilities, Condition2, RoofMatl, Heating) %>%
+  step_unknown(all_predictors(), -all_numeric(), new_level = "NA") %>% #impute missing values for categorical features
+  step_log(all_outcomes()) %>%
+  step_nzv(all_predictors(),-all_numeric()) %>%
+  step_other(all_predictors(), -all_numeric(), threshold = 0.01) %>%
+  step_lencode_mixed(all_predictors(), -all_numeric(), outcome = vars(SalePrice)) %>%
+  step_knnimpute(all_predictors()) %>% #impute missing values
+  step_corr(all_predictors(), threshold = 0.8) %>%
+  step_pca(all_predictors(), num_comp = 6) %>%
+  step_normalize(all_predictors())
+
+```
+
+
+Model with PCA
+```{r}
+
+# Tuning parameters for method 'ranger'
+gbm_pca <- daml_train(train, pca_recipe,
+                  model = "gbm",
+                  tracking = "mlflow",
+                  feature_selection = "varimp",
+                  max_features = 24,
+                  p_subset = 0.3,
+                  tracking_uri = "http://localhost:5000",
+                  mlflow_experiment = "house pricing",
+                  grid = tuneGrid)
+
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+submission_pca <- test %>%
+  daml_predict(model = gbm_pca, pred_field = "SalePrice") %>%
+  select(Id, SalePrice) %>%
+  mutate(SalePrice = exp(SalePrice))
+
+write.csv(submission_pca, "gbm_pca.csv", row.names = F)
+```
+
+
+Feature interactions
+```{r}
+inter_recipe <- recipe(train) %>%
+  #set roles
+  update_role(everything(), new_role = "predictor") %>%
+  update_role(SalePrice, new_role = "outcome") %>%
+  update_role(Id, new_role = "ID variable") %>%
+  #data cleansing
+  step_mutate(Id = as.character(Id)) %>%
+  step_mutate(MSSubClass = as.factor(MSSubClass)) %>%
+  step_mutate(GarageCars = as.character(GarageCars)) %>%
+  step_mutate(GarageCars = ifelse((GarageCars == "4" | GarageCars == "3"), "3+", GarageCars)) %>%
+  step_mutate(GarageCars = as.factor(GarageCars)) %>%
+  #step_filter(GrLivArea < 4500) %>%
+  #remove feautues
+  step_rm(PoolQC, PoolArea, LandSlope, MiscFeature, Street, Utilities, Condition2, RoofMatl, Heating) %>%
+  step_unknown(all_predictors(), -all_numeric(), new_level = "NA") %>% #impute missing values for categorical features
+  step_log(all_outcomes()) %>%
+  step_nzv(all_predictors(),-all_numeric()) %>%
+  step_other(all_predictors(), -all_numeric(), threshold = 0.01) %>%
+  step_novel(all_predictors(),-all_numeric(), new_level = "new") %>%
+  step_lencode_mixed(all_predictors(), -all_numeric(), outcome = vars(SalePrice)) %>%
+  step_knnimpute(all_predictors()) %>% #impute missing values
+  step_interact(terms = ~ all_predictors()/all_predictors()) %>%
+  step_corr(all_predictors(), threshold = 0.8) %>%
+  step_log(all_predictors())
+
+inter_recipe
+
+inter_prep <- prep(inter_recipe,training = train)
+inter_prep
+
+inter_bake <- bake(inter_prep,train)
+
+```
+
+Now lets try **gbm** with **full_recipe**
+```{r message=FALSE, warning=FALSE}
+# Tuning parameters for method 'gbm'
+tuneGrid <- expand.grid(n.trees = 200,
+                        interaction.depth = 7,
+                        shrinkage = 0.1,
+                        n.minobsinnode = 10)
+
+# Tuning parameters for method 'ranger'
+gbm <- daml_train(train, inter_recipe,
+                  model = "gbm",
+                  tracking = "mlflow",
+                  feature_selection = "varimp",
+                  max_features = 24,
+                  p_subset = 0.3,
+                  tracking_uri = "http://localhost:5000",
+                  mlflow_experiment = "house pricing",
+                  grid = tuneGrid)
+
+gbm
+varImp(gbm)
+
+
+```
+
+```{r message=FALSE, warning=FALSE}
+submission <- test %>%
+  daml_predict(model = gbm, pred_field = "SalePrice") %>%
+  select(Id, SalePrice) %>%
+  mutate(SalePrice = exp(SalePrice))
+
+write.csv(submission, "gbm_baseline.csv", row.names = F)
+```   
