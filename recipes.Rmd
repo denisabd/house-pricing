@@ -26,6 +26,7 @@ library(DataExplorer)
 library(plotly)
 library(GGally)
 library(knitr)
+library(kernlab)
 ```
 
 ```{r}
@@ -210,6 +211,7 @@ features <- as.character(varimp$feature)
 
 ```
 
+Submission scored really well on Kaggle
 ```{r message=FALSE, warning=FALSE}
 submission_fs <- test %>%
   daml_predict(model = gbm_fs, pred_field = "SalePrice") %>%
@@ -264,8 +266,8 @@ gbm_inter <- daml_train(train,
                   tracking = "mlflow",
                   tracking_uri = "http://localhost:5000",
                   mlflow_experiment = "house pricing",
-                  #grid = tuneGrid)
-                  tunelen = 10)
+                  grid = tuneGrid)
+                  #tunelen = 10)
 
 gbm_inter
 
@@ -280,6 +282,22 @@ varimp <- varimp %>%
   top_n(24)
 
 features_inter <- as.character(varimp$feature)
+
+```
+
+
+```{r}
+
+prep_inter <- prep(recipe_inter, training = train)
+bake_inter <- bake(prep_inter, train)
+
+
+p <- ggplot(aes(x = SalePrice, y = OverallQual_x_GarageType), data = bake_inter) + 
+    geom_point(color='blue') 
+ggplotly(p)
+
+#OverallQual:GrLivArea)
+#TotalBsmtSF:GrLivArea)
 
 ```
 
@@ -319,11 +337,8 @@ recipe_final <- recipe(train) %>%
   step_novel(all_predictors(),-all_numeric(), new_level = "new") %>%
   step_lencode_mixed(all_predictors(), -all_numeric(), outcome = vars(SalePrice)) %>%
   step_knnimpute(all_predictors()) %>% #impute missing values
-  step_interact(~ Neighborhood:OverallQual) %>% #interaction
   step_interact(~ OverallQual:GrLivArea) %>%
   step_interact(~ TotalBsmtSF:GrLivArea) %>%
-  step_interact(~ Neighborhood:KitchenQual) %>%
-  step_interact(~ OverallQual:GarageType) %>%
   step_YeoJohnson(all_predictors())
 
 recipe_final
@@ -349,6 +364,7 @@ gbm_final <- daml_train(train,
 gbm_final
 varImp(gbm_final)
 
+
 ```
 
 ```{r message=FALSE, warning=FALSE}
@@ -360,3 +376,144 @@ submission_final <- test %>%
 write.csv(submission_final, "gbm_final.csv", row.names = F)
 ```   
 
+svm Model
+```{r message=FALSE, warning=FALSE}
+svm <- daml_train(train,
+                  recipe_final,
+                  model = "svmLinear",
+                  tracking = "mlflow",
+                  tracking_uri = "http://localhost:5000",
+                  mlflow_experiment = "house pricing",
+                  tunelen = 10)
+
+
+svm
+varImp(svm)
+
+
+```
+
+```{r message=FALSE, warning=FALSE}
+submission_svm <- test %>%
+  daml_predict(model = svm, pred_field = "SalePrice") %>%
+  select(Id, SalePrice) %>%
+  mutate(SalePrice = exp(SalePrice))
+
+write.csv(submission_svm, "svm.csv", row.names = F)
+```   
+ 
+ 
+RF Model
+```{r message=FALSE, warning=FALSE}
+
+rf <- daml_train(train,
+                  recipe_final,
+                  model = "rf",
+                  tracking = "mlflow",
+                  tracking_uri = "http://localhost:5000",
+                  mlflow_experiment = "house pricing",
+                  tunelen = 5)
+
+
+rf
+varImp(rf)
+
+
+```
+
+```{r message=FALSE, warning=FALSE}
+submission_rf <- test %>%
+  daml_predict(model = rf, pred_field = "SalePrice") %>%
+  select(Id, SalePrice) %>%
+  mutate(SalePrice = exp(SalePrice))
+
+write.csv(submission_rf, "rf.csv", row.names = F)
+```   
+
+
+KNN Model
+```{r message=FALSE, warning=FALSE}
+
+knn <- daml_train(train,
+                  recipe_final,
+                  model = "knn",
+                  tracking = "mlflow",
+                  tracking_uri = "http://localhost:5000",
+                  mlflow_experiment = "house pricing",
+                  tunelen = 25)
+
+
+knn
+varImp(knn)
+
+
+```
+
+```{r message=FALSE, warning=FALSE}
+submission_knn <- test %>%
+  daml_predict(model = knn, pred_field = "SalePrice") %>%
+  select(Id, SalePrice) %>%
+  mutate(SalePrice = exp(SalePrice))
+
+write.csv(submission_knn, "knn.csv", row.names = F)
+```  
+
+ridge Model
+```{r message=FALSE, warning=FALSE}
+
+ridge <- daml_train(train,
+                  recipe_final,
+                  model = "ridge",
+                  tracking = "mlflow",
+                  tracking_uri = "http://localhost:5000",
+                  mlflow_experiment = "house pricing",
+                  tunelen = 10)
+
+
+ridge
+varImp(ridge)
+
+
+```
+
+```{r message=FALSE, warning=FALSE}
+submission_ridge <- test %>%
+  daml_predict(model = ridge, pred_field = "SalePrice") %>%
+  select(Id, SalePrice) %>%
+  mutate(SalePrice = exp(SalePrice))
+
+write.csv(submission_ridge, "ridge.csv", row.names = F)
+```  
+
+
+Ensemble Model
+```{r}
+submission_gbm <- submission_fs %>%
+  dplyr::rename(SalePriceGBM = SalePrice)
+
+submission_svm <- submission_svm %>%
+  dplyr::rename(SalePriceSVM = SalePrice)
+
+submission_ridge <- submission_ridge %>%
+  dplyr::rename(SalePriceRidge = SalePrice)
+
+submission_rf <- submission_rf %>%
+  dplyr::rename(SalePriceRF = SalePrice)
+
+submission_knn <- submission_knn %>%
+  dplyr::rename(SalePriceKNN = SalePrice)
+
+submission_ensemble <- submission_gbm %>%
+  inner_join(submission_rf, by = 'Id') %>%
+  inner_join(submission_ridge, by = 'Id') %>%
+  inner_join(submission_knn, by = 'Id') %>%
+  inner_join(submission_svm, by = 'Id') %>%
+  mutate(SalePrice = 0.75*SalePriceGBM + 0.1*SalePriceSVM + 0.15*SalePriceRidge) %>%
+  select(Id, SalePrice)
+
+
+write.csv(submission_ensemble,"ensemble.csv", row.names = F)
+
+```
+
+**THIS SCORES 0.12357 ON KAGGLE**
