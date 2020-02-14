@@ -40,7 +40,7 @@ Full recipe
 train <- train %>%
   filter(GrLivArea < 4500)
 
-full_recipe <- recipe(train) %>%
+recipe <- recipe(train) %>%
   #set roles
   update_role(everything(), new_role = "predictor") %>%
   update_role(SalePrice, new_role = "outcome") %>%
@@ -64,13 +64,11 @@ full_recipe <- recipe(train) %>%
   step_corr(all_predictors(), threshold = 0.8) %>%
   step_normalize(all_predictors())
 
-full_recipe
+recipe
 
-full_prep <- prep(full_recipe,training = train)
-full_prep
 ```
 
-Now lets try **gbm** with **full_recipe**
+Now lets try **gbm** model
 ```{r message=FALSE, warning=FALSE}
 # Tuning parameters for method 'gbm'
 tuneGrid <- expand.grid(n.trees = 200,
@@ -81,7 +79,7 @@ tuneGrid <- expand.grid(n.trees = 200,
 set.seed(123)
 
 # Tuning parameters for method 'ranger'
-gbm <- daml_train(train, full_recipe,
+gbm <- daml_train(train, recipe,
                   model = "gbm",
                   tracking = "mlflow",
                   feature_selection = "varimp",
@@ -94,7 +92,6 @@ gbm <- daml_train(train, full_recipe,
 gbm
 varImp(gbm)
 
-getModelInfo("gbm", regex = FALSE)[[1]]$grid
 
 ```
 
@@ -110,7 +107,7 @@ write.csv(submission, "gbm_baseline.csv", row.names = F)
 
 Recipe with PCA
 ```{r}
-pca_recipe <- recipe(train) %>%
+recipe_pca <- recipe(train) %>%
   #set roles
   update_role(everything(), new_role = "predictor") %>%
   update_role(SalePrice, new_role = "outcome") %>%
@@ -121,17 +118,17 @@ pca_recipe <- recipe(train) %>%
   step_mutate(GarageCars = as.character(GarageCars)) %>%
   step_mutate(GarageCars = ifelse((GarageCars == "4" | GarageCars == "3"), "3+", GarageCars)) %>%
   step_mutate(GarageCars = as.factor(GarageCars)) %>%
-  #step_filter(GrLivArea < 4500) %>%
   #remove feautues
   step_rm(PoolQC, PoolArea, LandSlope, MiscFeature, Street, Utilities, Condition2, RoofMatl, Heating) %>%
   step_unknown(all_predictors(), -all_numeric(), new_level = "NA") %>% #impute missing values for categorical features
   step_log(all_outcomes()) %>%
   step_nzv(all_predictors(),-all_numeric()) %>%
   step_other(all_predictors(), -all_numeric(), threshold = 0.01) %>%
-  step_lencode_mixed(all_predictors(), -all_numeric(), outcome = vars(SalePrice)) %>%
+  #step_lencode_mixed(all_predictors(), -all_numeric(), outcome = vars(SalePrice)) %>%
+  step_dummy(all_predictors(), -all_numeric()) %>%
   step_knnimpute(all_predictors()) %>% #impute missing values
   step_corr(all_predictors(), threshold = 0.8) %>%
-  step_pca(all_predictors(), num_comp = 6) %>%
+  step_pca(all_predictors(), num_comp = 400) %>%
   step_normalize(all_predictors())
 
 ```
@@ -141,17 +138,14 @@ Model with PCA
 ```{r}
 
 # Tuning parameters for method 'ranger'
-gbm_pca <- daml_train(train, pca_recipe,
+gbm_pca <- daml_train(train, recipe_pca,
                   model = "gbm",
                   tracking = "mlflow",
-                  feature_selection = "varimp",
-                  max_features = 24,
-                  p_subset = 0.3,
                   tracking_uri = "http://localhost:5000",
                   mlflow_experiment = "house pricing",
                   grid = tuneGrid)
 
-
+varImp(gbm_pca)
 ```
 
 
@@ -165,9 +159,9 @@ write.csv(submission_pca, "gbm_pca.csv", row.names = F)
 ```
 
 
-Feature interactions
+Recipe to select most important features
 ```{r}
-inter_recipe <- recipe(train) %>%
+recipe_fs <- recipe(train) %>%
   #set roles
   update_role(everything(), new_role = "predictor") %>%
   update_role(SalePrice, new_role = "outcome") %>%
@@ -178,7 +172,6 @@ inter_recipe <- recipe(train) %>%
   step_mutate(GarageCars = as.character(GarageCars)) %>%
   step_mutate(GarageCars = ifelse((GarageCars == "4" | GarageCars == "3"), "3+", GarageCars)) %>%
   step_mutate(GarageCars = as.factor(GarageCars)) %>%
-  #step_filter(GrLivArea < 4500) %>%
   #remove feautues
   step_rm(PoolQC, PoolArea, LandSlope, MiscFeature, Street, Utilities, Condition2, RoofMatl, Heating) %>%
   step_unknown(all_predictors(), -all_numeric(), new_level = "NA") %>% #impute missing values for categorical features
@@ -188,49 +181,182 @@ inter_recipe <- recipe(train) %>%
   step_novel(all_predictors(),-all_numeric(), new_level = "new") %>%
   step_lencode_mixed(all_predictors(), -all_numeric(), outcome = vars(SalePrice)) %>%
   step_knnimpute(all_predictors()) %>% #impute missing values
-  step_interact(terms = ~ all_predictors()/all_predictors()) %>%
-  step_corr(all_predictors(), threshold = 0.8) %>%
-  step_log(all_predictors())
-
-inter_recipe
-
-inter_prep <- prep(inter_recipe,training = train)
-inter_prep
-
-inter_bake <- bake(inter_prep,train)
+  step_YeoJohnson(all_predictors())
 
 ```
 
-Now lets try **gbm** with **full_recipe**
+Now lets try **gbm** with **recipe**
+```{r message=FALSE, warning=FALSE}
+
+gbm_fs <- daml_train(train, 
+                  recipe_fs,
+                  model = "gbm",
+                  tracking = "mlflow",
+                  tracking_uri = "http://localhost:5000",
+                  mlflow_experiment = "house pricing",
+                  tunelen = 10)
+
+gbm_fs
+
+varimp <- varImp(gbm_fs)
+varimp <- varimp$importance
+varimp <- varimp %>%
+  rownames_to_column(var = "feature") %>%
+  arrange(desc(Overall)) %>%
+  top_n(24)
+
+features <- as.character(varimp$feature)
+
+
+```
+
+```{r message=FALSE, warning=FALSE}
+submission_fs <- test %>%
+  daml_predict(model = gbm_fs, pred_field = "SalePrice") %>%
+  select(Id, SalePrice) %>%
+  mutate(SalePrice = exp(SalePrice))
+
+write.csv(submission_fs, "gbm_fs.csv", row.names = F)
+```   
+
+Feature interactions could be a very expensive computation. Lest create all feature combinations and then try to select the best features out of those.
+```{r}
+
+features
+
+recipe_inter <- recipe(train) %>%
+  #set roles
+  update_role(everything(), new_role = "other") %>%
+  update_role(features, new_role = "predictor") %>%
+  update_role(SalePrice, new_role = "outcome") %>%
+  update_role(Id, new_role = "ID variable") %>%
+  #data cleansing
+  step_mutate(Id = as.character(Id)) %>%
+  step_mutate(MSSubClass = as.factor(MSSubClass)) %>%
+  step_mutate(GarageCars = as.character(GarageCars)) %>%
+  step_mutate(GarageCars = ifelse((GarageCars == "4" | GarageCars == "3"), "3+", GarageCars)) %>%
+  step_mutate(GarageCars = as.factor(GarageCars)) %>%
+  #remove feautues
+  step_rm(PoolQC, PoolArea, LandSlope, MiscFeature, Street, Utilities, Condition2, RoofMatl, Heating) %>%
+  step_unknown(all_predictors(), -all_numeric(), new_level = "NA") %>% #impute missing values for categorical features
+  step_log(all_outcomes()) %>%
+  step_nzv(all_predictors(),-all_numeric()) %>%
+  step_other(all_predictors(), -all_numeric(), threshold = 0.01) %>%
+  step_novel(all_predictors(),-all_numeric(), new_level = "new") %>%
+  step_lencode_mixed(all_predictors(), -all_numeric(), outcome = vars(SalePrice)) %>%
+  step_knnimpute(all_predictors()) %>% #impute missing values
+  step_interact(~ all_predictors():all_predictors()) %>% #interaction
+  step_YeoJohnson(all_predictors())
+
+
+```
+
 ```{r message=FALSE, warning=FALSE}
 # Tuning parameters for method 'gbm'
-tuneGrid <- expand.grid(n.trees = 200,
+tuneGrid <- expand.grid(n.trees = 100,
                         interaction.depth = 7,
                         shrinkage = 0.1,
                         n.minobsinnode = 10)
 
-# Tuning parameters for method 'ranger'
-gbm <- daml_train(train, inter_recipe,
+gbm_inter <- daml_train(train, 
+                  recipe_inter,
                   model = "gbm",
                   tracking = "mlflow",
-                  feature_selection = "varimp",
-                  max_features = 24,
-                  p_subset = 0.3,
                   tracking_uri = "http://localhost:5000",
                   mlflow_experiment = "house pricing",
-                  grid = tuneGrid)
+                  #grid = tuneGrid)
+                  tunelen = 10)
 
-gbm
-varImp(gbm)
+gbm_inter
 
+varImp(gbm_inter)
+
+# now lets get most important features from interactions
+varimp <- varImp(gbm_inter)
+varimp <- varimp$importance
+varimp <- varimp %>%
+  rownames_to_column(var = "feature") %>%
+  arrange(desc(Overall)) %>%
+  top_n(24)
+
+features_inter <- as.character(varimp$feature)
 
 ```
 
 ```{r message=FALSE, warning=FALSE}
-submission <- test %>%
-  daml_predict(model = gbm, pred_field = "SalePrice") %>%
+submission_inter <- test %>%
+  daml_predict(model = gbm_inter, pred_field = "SalePrice") %>%
   select(Id, SalePrice) %>%
   mutate(SalePrice = exp(SalePrice))
 
-write.csv(submission, "gbm_baseline.csv", row.names = F)
+write.csv(submission_inter, "gbm_inter.csv", row.names = F)
 ```   
+
+
+Now when we have top 24 features including interactions, lets tune hyperparameters as well.
+```{r}
+
+features_inter
+
+recipe_final <- recipe(train) %>%
+  #set roles
+  update_role(everything(), new_role = "other") %>%
+  update_role(features, new_role = "predictor") %>%
+  update_role(SalePrice, new_role = "outcome") %>%
+  update_role(Id, new_role = "ID variable") %>%
+  #data cleansing
+  step_mutate(Id = as.character(Id)) %>%
+  step_mutate(MSSubClass = as.factor(MSSubClass)) %>%
+  step_mutate(GarageCars = as.character(GarageCars)) %>%
+  step_mutate(GarageCars = ifelse((GarageCars == "4" | GarageCars == "3"), "3+", GarageCars)) %>%
+  step_mutate(GarageCars = as.factor(GarageCars)) %>%
+  #remove feautues
+  step_rm(PoolQC, PoolArea, LandSlope, MiscFeature, Street, Utilities, Condition2, RoofMatl, Heating) %>%
+  step_unknown(all_predictors(), -all_numeric(), new_level = "NA") %>% #impute missing values for categorical features
+  step_log(all_outcomes()) %>%
+  step_nzv(all_predictors(),-all_numeric()) %>%
+  step_other(all_predictors(), -all_numeric(), threshold = 0.01) %>%
+  step_novel(all_predictors(),-all_numeric(), new_level = "new") %>%
+  step_lencode_mixed(all_predictors(), -all_numeric(), outcome = vars(SalePrice)) %>%
+  step_knnimpute(all_predictors()) %>% #impute missing values
+  step_interact(~ Neighborhood:OverallQual) %>% #interaction
+  step_interact(~ OverallQual:GrLivArea) %>%
+  step_interact(~ TotalBsmtSF:GrLivArea) %>%
+  step_interact(~ Neighborhood:KitchenQual) %>%
+  step_interact(~ OverallQual:GarageType) %>%
+  step_YeoJohnson(all_predictors())
+
+recipe_final
+
+```
+
+```{r message=FALSE, warning=FALSE}
+# Tuning parameters for method 'gbm'
+tuneGrid <- expand.grid(n.trees = c(100,150,200),
+                        interaction.depth = c(2,3,4,5,7,9),
+                        shrinkage = 0.1,
+                        n.minobsinnode = c(5,10,15))
+
+gbm_final <- daml_train(train,
+                        recipe_final,
+                        model = "gbm",
+                        tracking = "mlflow",
+                        tracking_uri = "http://localhost:5000",
+                        mlflow_experiment = "house pricing",
+                        grid = tuneGrid)
+
+
+gbm_final
+varImp(gbm_final)
+
+```
+
+```{r message=FALSE, warning=FALSE}
+submission_final <- test %>%
+  daml_predict(model = gbm_final, pred_field = "SalePrice") %>%
+  select(Id, SalePrice) %>%
+  mutate(SalePrice = exp(SalePrice))
+
+write.csv(submission_final, "gbm_final.csv", row.names = F)
+```   
+
